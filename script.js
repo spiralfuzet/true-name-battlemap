@@ -34,9 +34,12 @@ const numberInput = document.getElementById('number-input');
 const areaToggle = document.getElementById('area-toggle');
 const areaRadiusInput = document.getElementById('area-radius');
 
+// Grid Type
+const gridTypeSelect = document.getElementById('grid-type-select');
+
 // Configuration
 const CONFIG = {
-    hexSize: 30, // Radius of the hex (center to corner)
+    hexSize: 30, // Radius of the hex (center to corner) / Half-width for square
     mapRadius: 10, // Number of rings
     gap: 0, // Space between hexes
     colors: {
@@ -51,21 +54,22 @@ const CONFIG = {
 
 // State
 let state = {
-    orientation: 'POINTY', // 'POINTY' or 'FLAT'
-    hoveredHex: null,
+    gridType: 'HEX', // 'HEX' or 'SQUARE'
+    orientation: 'POINTY', // 'POINTY' or 'FLAT' (Only for HEX)
+    hoveredHex: null, // Rename to hoveredCell conceptually?
     width: window.innerWidth,
     height: window.innerHeight,
     camera: { x: 0, y: 0, zoom: 1 },
-    swordsmen: [], // Array of objects {q,r,s, rotation, aura: [], color, auraOpacity, showArea: bool, areaRadius: number}
-    markers: [], // Array of objects {q,r,s, color, opacity}
-    numbers: [], // Array of objects {q,r,s, value}
-    arrows: [], // Array of objects {from: {q,r,s}, to: {q,r,s}, color}
+    swordsmen: [], // Unit {q,r,s} or {col,row} + props
+    markers: [],
+    numbers: [],
+    arrows: [],
     mode: 'VIEW', // 'VIEW', 'PLACE_UNIT', 'PLACE_MARKER', 'PLACE_NUMBER', 'PLACE_ARROW', 'GRID_SETTINGS'
     selectedUnitIndex: -1,
     isMoving: false,
     isPainting: false,
     nextColorIndex: 0,
-    arrowStart: null // {q,r,s} temporary 
+    arrowStart: null
 };
 
 // --- Hex Math (Cube Coordinates: q, r, s) ---
@@ -157,6 +161,33 @@ function generateRing(centerHex, radius) {
     return hexes;
 }
 
+function generateSquareGrid(radius) {
+    let cells = [];
+    // Radius implies N shells. For Square, simple grid from -R to +R
+    for (let col = -radius; col <= radius; col++) {
+        for (let row = -radius; row <= radius; row++) {
+            cells.push({ col, row });
+        }
+    }
+    return cells;
+}
+
+function generateSquareRing(center, radius) {
+    if (radius === 0) return [center];
+    let cells = [];
+    // Circle-like Ring using Rounded Euclidean Distance
+    // Scan bounding box [-radius, radius]
+    for (let c = -radius; c <= radius; c++) {
+        for (let r = -radius; r <= radius; r++) {
+            const dist = Math.sqrt(c * c + r * r);
+            if (Math.round(dist) === radius) {
+                cells.push({ col: center.col + c, row: center.row + r });
+            }
+        }
+    }
+    return cells;
+}
+
 // --- Layout & Pixel Conversion ---
 
 function hexToPixel(hex) {
@@ -170,6 +201,38 @@ function hexToPixel(hex) {
         y = size * (Math.sqrt(3) / 2 * hex.q + Math.sqrt(3) * hex.r);
     }
     return { x, y };
+}
+
+// Square Grid Helpers
+function squareToPixel(sq) {
+    const size = CONFIG.hexSize * 2; // Cell width = 60
+    return {
+        x: sq.col * size,
+        y: sq.row * size
+    };
+}
+
+function pixelToSquare(x, y) {
+    const size = CONFIG.hexSize * 2;
+    const col = Math.round(x / size);
+    const row = Math.round(y / size);
+    return { col, row };
+}
+
+function posToPixel(pos) {
+    if (state.gridType === 'HEX') {
+        return hexToPixel(pos);
+    } else {
+        return squareToPixel(pos);
+    }
+}
+
+function pixelToPos(x, y) {
+    if (state.gridType === 'HEX') {
+        return pixelToHex(x, y);
+    } else {
+        return pixelToSquare(x, y);
+    }
 }
 
 // Simple rounding for pixel->hex (not strictly needed for just rendering, but needed for interaction)
@@ -231,18 +294,76 @@ function drawHex(hex, center, style = {}) {
     }
 }
 
+function drawSquare(cell, center, style = {}) {
+    const { x, y } = squareToPixel(cell);
+    const pixelX = center.x + x;
+    const pixelY = center.y + y;
+    const size = CONFIG.hexSize * 2; // Full width
+
+    ctx.beginPath();
+    ctx.rect(pixelX - size / 2, pixelY - size / 2, size, size);
+
+    if (style.strokeOnly) {
+        ctx.strokeStyle = style.strokeStyle || '#333';
+        ctx.lineWidth = style.lineWidth || 1;
+        ctx.stroke();
+        return;
+    }
+
+    ctx.fillStyle = (style && style.fillStyle) ? style.fillStyle : CONFIG.colors.fill;
+    ctx.fill();
+
+    // Move Target logic (Square)
+    let isMoveTarget = false;
+    if (state.selectedUnitIndex !== -1 && state.isMoving && state.gridType === 'SQUARE') {
+        const selectedUnit = state.swordsmen[state.selectedUnitIndex];
+        const dCol = Math.abs(selectedUnit.col - cell.col);
+        const dRow = Math.abs(selectedUnit.row - cell.row);
+        // 8-way movement (Chebyshev distance = 1)
+        if (Math.max(dCol, dRow) === 1) {
+            isMoveTarget = true;
+        }
+    }
+
+    if (isMoveTarget) {
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 2;
+    } else {
+        ctx.strokeStyle = CONFIG.colors.line;
+        ctx.lineWidth = 1;
+    }
+    ctx.stroke();
+
+    if (isMoveTarget) {
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+        ctx.fill();
+    }
+}
+
 function drawUnitArea(unit, center) {
     if (!unit.showArea || !unit.areaRadius || unit.areaRadius < 1) return;
 
     for (let r = 1; r <= unit.areaRadius; r++) {
-        const ringHexes = generateRing(unit, r);
-        ringHexes.forEach(hex => {
-            drawHex(hex, center, {
-                strokeOnly: true,
-                strokeStyle: unit.color || '#333',
-                lineWidth: 2
+        let ringCells;
+        if (state.gridType === 'HEX') {
+            ringCells = generateRing(unit, r);
+            ringCells.forEach(hex => {
+                drawHex(hex, center, {
+                    strokeOnly: true,
+                    strokeStyle: unit.color || '#333',
+                    lineWidth: 2
+                });
             });
-        });
+        } else {
+            ringCells = generateSquareRing(unit, r);
+            ringCells.forEach(cell => {
+                drawSquare(cell, center, {
+                    strokeOnly: true,
+                    strokeStyle: unit.color || '#333',
+                    lineWidth: 2
+                });
+            });
+        }
     }
 }
 
@@ -252,11 +373,18 @@ function render() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const center = { x: canvas.width / 2, y: canvas.height / 2 };
-    const hexes = generateMap(CONFIG.mapRadius); // Efficiency: could cache this if it doesn't change
 
-    hexes.forEach(hex => {
-        drawHex(hex, center);
-    });
+    if (state.gridType === 'HEX') {
+        const hexes = generateMap(CONFIG.mapRadius);
+        hexes.forEach(hex => {
+            drawHex(hex, center);
+        });
+    } else {
+        const cells = generateSquareGrid(CONFIG.mapRadius);
+        cells.forEach(cell => {
+            drawSquare(cell, center);
+        });
+    }
 
     // Draw Area Rings (Under markers/units)
     state.swordsmen.forEach(unit => {
@@ -265,7 +393,7 @@ function render() {
 
     // Draw Markers
     state.markers.forEach(marker => {
-        const { x, y } = hexToPixel(marker);
+        const { x, y } = posToPixel(marker);
         const pixelX = center.x + x;
         const pixelY = center.y + y;
         const rgb = hexToRgb(marker.color || '#3b82f6');
@@ -289,11 +417,35 @@ function render() {
             const rgb = hexToRgb(unit.color || '#3b82f6');
             const fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${unit.auraOpacity || 0.5})`;
 
-            unit.aura.forEach(relHex => {
-                // Rotate relative hex by unit rotation
-                const rotHex = hexRotate(relHex, unit.rotation || 0);
-                const absHex = hexAdd(unit, rotHex);
-                drawHex(absHex, center, { fillStyle });
+            unit.aura.forEach(relPos => {
+                let absPos;
+                if (state.gridType === 'HEX') {
+                    // Rotate relative hex by unit rotation
+                    const rotHex = hexRotate(relPos, unit.rotation || 0);
+                    absPos = hexAdd(unit, rotHex);
+                    drawHex(absPos, center, { fillStyle });
+                } else {
+                    // Square Rotation: unit.rotation = 0-3 (90 deg steps)
+                    // Manual rotation math for (col, row)
+                    // 0: (c, r)
+                    // 1 (90 deg CW): (-r, c)
+                    // 2 (180 deg CW): (-c, -r)
+                    // 3 (270 deg CW): (r, -c)
+
+                    let rc = relPos.col;
+                    let rr = relPos.row;
+
+                    // Rotate relPos by unit.rotation
+                    const rot = (unit.rotation || 0) % 4; // Ensure modulo 4
+                    for (let i = 0; i < rot; i++) {
+                        const temp = rc;
+                        rc = -rr;
+                        rr = temp;
+                    }
+
+                    const absPos = { col: unit.col + rc, row: unit.row + rr };
+                    drawSquare(absPos, center, { fillStyle });
+                }
             });
         }
     });
@@ -310,33 +462,37 @@ function render() {
 
     // Draw Arrow Start Highlight
     if (state.mode === 'PLACE_ARROW' && state.arrowStart) {
-        // Change from fill to stroke only (Line color)
-        drawHex(state.arrowStart, center, { fillStyle: 'transparent' });
+        if (state.gridType === 'HEX') {
+            drawHex(state.arrowStart, center, { fillStyle: 'transparent' });
+            // Manual override for highlight border
+            const { x, y } = hexToPixel(state.arrowStart);
+            const pixelX = center.x + x;
+            const pixelY = center.y + y;
 
-        // Manual override for highlight border to match request "mark differently... eg change hex line color"
-        const { x, y } = hexToPixel(state.arrowStart);
-        const pixelX = center.x + x;
-        const pixelY = center.y + y;
-
-        ctx.beginPath();
-        for (let i = 0; i < 6; i++) {
-            const theta = (state.orientation === 'POINTY' ? 30 : 0) + 60 * i;
-            const rad = Math.PI / 180 * theta;
-            const px = pixelX + (CONFIG.hexSize - CONFIG.gap / 2) * Math.cos(rad);
-            const py = pixelY + (CONFIG.hexSize - CONFIG.gap / 2) * Math.sin(rad);
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                const theta = (state.orientation === 'POINTY' ? 30 : 0) + 60 * i;
+                const rad = Math.PI / 180 * theta;
+                const px = pixelX + (CONFIG.hexSize - CONFIG.gap / 2) * Math.cos(rad);
+                const py = pixelY + (CONFIG.hexSize - CONFIG.gap / 2) * Math.sin(rad);
+                if (i === 0) ctx.moveTo(px, py);
+                else ctx.lineTo(px, py);
+            }
+            ctx.closePath();
+            ctx.strokeStyle = '#3b82f6'; // Blue Highlight Line
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        } else {
+            // Square Highlight
+            drawSquare(state.arrowStart, center, { strokeOnly: true, strokeStyle: '#3b82f6', lineWidth: 3 });
         }
-        ctx.closePath();
-        ctx.strokeStyle = '#3b82f6'; // Blue Highlight Line
-        ctx.lineWidth = 3;
-        ctx.stroke();
     }
 }
 
+// Update drawArrow
 function drawArrow(arrow, center) {
-    const fromP = hexToPixel(arrow.from);
-    const toP = hexToPixel(arrow.to);
+    const fromP = posToPixel(arrow.from);
+    const toP = posToPixel(arrow.to);
 
     const startX = center.x + fromP.x;
     const startY = center.y + fromP.y;
@@ -384,7 +540,7 @@ function drawArrow(arrow, center) {
 }
 
 function drawNumber(num, center) {
-    const { x, y } = hexToPixel(num);
+    const { x, y } = posToPixel(num);
     const pixelX = center.x + x;
     const pixelY = center.y + y;
 
@@ -404,7 +560,7 @@ function drawNumber(num, center) {
 }
 
 function drawSwordsman(unit, center, isSelected) {
-    const { x, y } = hexToPixel(unit);
+    const { x, y } = posToPixel(unit);
     const pixelX = center.x + x;
     const pixelY = center.y + y;
 
@@ -414,6 +570,7 @@ function drawSwordsman(unit, center, isSelected) {
     // Selection highlight
     if (isSelected) {
         ctx.beginPath();
+        // Circle or Square highlight based on grid? Let's stick to circle for unit selection, looks better.
         ctx.arc(0, 0, CONFIG.hexSize * 0.8, 0, Math.PI * 2);
         ctx.strokeStyle = '#f59e0b'; // Amber-500
         ctx.lineWidth = 3;
@@ -424,14 +581,25 @@ function drawSwordsman(unit, center, isSelected) {
 
     // Orientation logic
     let baseRotation = 0;
-    if (state.orientation === 'POINTY') {
-        baseRotation = -60 * (Math.PI / 180);
+    if (state.gridType === 'HEX') {
+        if (state.orientation === 'POINTY') {
+            baseRotation = -60 * (Math.PI / 180);
+        } else {
+            baseRotation = -90 * (Math.PI / 180);
+        }
     } else {
+        // Square: 0 is Right (East). -90 is Up (North).
+        // Let's assume default "UP" for 0 rotation?
+        // Actually, user said 45 degrees.
+        // Let's stick to standard math: 0 = East.
+        // If we want swordsman pointing UP by default, rotation should be -90 deg (-PI/2).
         baseRotation = -90 * (Math.PI / 180);
     }
 
-    // Individual unit rotation (60 degree steps)
-    const unitRotation = (unit.rotation || 0) * 60 * (Math.PI / 180);
+    // Individual unit rotation
+    // HEX: 60 deg steps. SQUARE: 90 deg steps.
+    const stepSize = state.gridType === 'HEX' ? 60 : 90;
+    const unitRotation = (unit.rotation || 0) * stepSize * (Math.PI / 180);
 
     ctx.rotate(baseRotation + unitRotation);
 
@@ -584,6 +752,14 @@ function updateUI() {
 
 // --- Init & Events ---
 
+const isSamePos = (a, b) => {
+    if (state.gridType === 'HEX') {
+        return Math.round(a.q) === Math.round(b.q) && Math.round(a.r) === Math.round(b.r) && Math.round(a.s) === Math.round(b.s);
+    } else {
+        return a.col === b.col && a.row === b.row;
+    }
+}
+
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -597,16 +773,43 @@ function toggleOrientation() {
     // Update Text
     if (state.orientation === 'POINTY') {
         btnText.textContent = "Switch to Flat Top";
-
     } else {
         btnText.textContent = "Switch to Pointy Top";
-
     }
+    render();
+}
+
+function switchGridType(newType) {
+    if (state.gridType === newType) return;
+
+    // Destructive action: Clear ALL entities
+    state.gridType = newType;
+    state.swordsmen = [];
+    state.markers = [];
+    state.numbers = [];
+    state.arrows = [];
+    state.selectedUnitIndex = -1;
+    state.arrowStart = null;
+    state.isPainting = false;
+    state.isMoving = false;
+    state.mode = 'VIEW';
+
+    // UI Updates
+    if (newType === 'SQUARE') {
+        toggleBtn.style.display = 'none'; // No Pointy/Flat for Square
+    } else {
+        toggleBtn.style.display = 'block';
+    }
+
+    updateUI();
     render();
 }
 
 // Event Listeners
 window.addEventListener('resize', resize);
+gridTypeSelect.addEventListener('change', (e) => {
+    switchGridType(e.target.value.toUpperCase());
+});
 toggleBtn.addEventListener('click', toggleOrientation);
 ringCountInput.addEventListener('input', (e) => {
     const val = parseInt(e.target.value);
@@ -656,19 +859,27 @@ canvas.addEventListener('click', (e) => {
     const x = e.clientX - rect.left - state.width / 2;
     const y = e.clientY - rect.top - state.height / 2;
 
-    const hex = pixelToHex(x, y);
+    const pos = pixelToPos(x, y);
+
+    // Helper to check equality based on grid type
+    const isSamePos = (a, b) => {
+        if (state.gridType === 'HEX') {
+            return Math.round(a.q) === Math.round(b.q) && Math.round(a.r) === Math.round(b.r) && Math.round(a.s) === Math.round(b.s);
+        } else {
+            return a.col === b.col && a.row === b.row;
+        }
+    };
 
     if (state.mode === 'PLACE_NUMBER') {
-        // Stamp logic: get value from input
         const val = numberInput.value;
-        const existingIdx = state.numbers.findIndex(n => n.q === hex.q && n.r === hex.r && n.s === hex.s);
+        const existingIdx = state.numbers.findIndex(n => isSamePos(n, pos));
 
         if (existingIdx !== -1) {
             state.numbers.splice(existingIdx, 1);
         }
 
         if (val && val.trim() !== '') {
-            state.numbers.push({ ...hex, value: val });
+            state.numbers.push({ ...pos, value: val });
         }
         render();
         return;
@@ -677,17 +888,16 @@ canvas.addEventListener('click', (e) => {
     if (state.mode === 'PLACE_ARROW') {
         if (!state.arrowStart) {
             // First click: Selection
-            state.arrowStart = hex;
+            state.arrowStart = pos;
         } else {
             // Second click: Target
             // Check if same: Cancel
-            if (state.arrowStart.q === hex.q && state.arrowStart.r === hex.r) {
+            if (isSamePos(state.arrowStart, pos)) {
                 state.arrowStart = null;
             } else {
                 // Toggle/Create Arrow
                 const existingIdx = state.arrows.findIndex(a =>
-                    a.from.q === state.arrowStart.q && a.from.r === state.arrowStart.r &&
-                    a.to.q === hex.q && a.to.r === hex.r
+                    isSamePos(a.from, state.arrowStart) && isSamePos(a.to, pos)
                 );
 
                 if (existingIdx !== -1) {
@@ -695,7 +905,7 @@ canvas.addEventListener('click', (e) => {
                 } else {
                     state.arrows.push({
                         from: state.arrowStart,
-                        to: hex,
+                        to: pos,
                         color: auraColorInput.value
                     });
                 }
@@ -711,16 +921,16 @@ canvas.addEventListener('click', (e) => {
         const color = CONFIG.defaultColors[state.nextColorIndex];
         state.nextColorIndex = (state.nextColorIndex + 1) % CONFIG.defaultColors.length;
 
-        state.swordsmen.push({ ...hex, rotation: 0, color: color, auraOpacity: 0.5, showArea: false, areaRadius: 1 });
+        state.swordsmen.push({ ...pos, rotation: 0, color: color, auraOpacity: 0.5, showArea: false, areaRadius: 1 });
         render();
     } else if (state.mode === 'PLACE_MARKER') {
         // Toggle Marker
-        const existingIndex = state.markers.findIndex(m => m.q === hex.q && m.r === hex.r && m.s === hex.s);
+        const existingIndex = state.markers.findIndex(m => isSamePos(m, pos));
         if (existingIndex !== -1) {
             state.markers.splice(existingIndex, 1);
         } else {
             state.markers.push({
-                ...hex,
+                ...pos,
                 color: auraColorInput.value,
                 opacity: parseFloat(auraOpacityInput.value)
             });
@@ -729,29 +939,40 @@ canvas.addEventListener('click', (e) => {
     } else if (state.isMoving && state.selectedUnitIndex !== -1) {
         // Attempt to move selected unit
         const selectedUnit = state.swordsmen[state.selectedUnitIndex];
-        const dq = Math.abs(selectedUnit.q - hex.q);
-        const dr = Math.abs(selectedUnit.r - hex.r);
-        const ds = Math.abs(selectedUnit.s - hex.s);
+        let isValidMove = false;
 
-        // If neighbor (distance 1)
-        if ((dq + dr + ds) === 2) {
+        if (state.gridType === 'HEX') {
+            const dq = Math.abs(selectedUnit.q - pos.q);
+            const dr = Math.abs(selectedUnit.r - pos.r);
+            const ds = Math.abs(selectedUnit.s - pos.s);
+            if ((dq + dr + ds) === 2) isValidMove = true;
+        } else {
+            // Square: 8-way movement
+            const dCol = Math.abs(selectedUnit.col - pos.col);
+            const dRow = Math.abs(selectedUnit.row - pos.row);
+            if (Math.max(dCol, dRow) === 1) isValidMove = true;
+        }
+
+        // If neighbor
+        if (isValidMove) {
             // Update coordinates but keep rotation
-            state.swordsmen[state.selectedUnitIndex].q = hex.q;
-            state.swordsmen[state.selectedUnitIndex].r = hex.r;
-            state.swordsmen[state.selectedUnitIndex].s = hex.s;
+            if (state.gridType === 'HEX') {
+                state.swordsmen[state.selectedUnitIndex].q = pos.q;
+                state.swordsmen[state.selectedUnitIndex].r = pos.r;
+                state.swordsmen[state.selectedUnitIndex].s = pos.s;
+            } else {
+                state.swordsmen[state.selectedUnitIndex].col = pos.col;
+                state.swordsmen[state.selectedUnitIndex].row = pos.row;
+            }
             // Stop moving
             state.isMoving = false;
             updateUI();
             render();
         } else {
-            // Clicked elsewhere, maybe deselect or cancel move?
+            // Clicked elsewhere
             state.isMoving = false;
             // Check if we clicked another unit
-            const index = state.swordsmen.findIndex(u =>
-                Math.round(u.q) === hex.q &&
-                Math.round(u.r) === hex.r &&
-                Math.round(u.s) === hex.s
-            );
+            const index = state.swordsmen.findIndex(u => isSamePos(u, pos));
             if (index !== -1) {
                 state.selectedUnitIndex = index;
             }
@@ -761,30 +982,45 @@ canvas.addEventListener('click', (e) => {
     } else if (state.isPainting && state.selectedUnitIndex !== -1) {
         // Aura Painting Logic
         const unit = state.swordsmen[state.selectedUnitIndex];
-        // Calculate relative vector: hex - unit
-        const vec = hexSubtract(hex, unit);
-        // Inverse rotate (by -rotation or 6-rotation)
-        const relHex = hexRotate(vec, 6 - (unit.rotation || 0));
+        let relPos;
+
+        if (state.gridType === 'HEX') {
+            const vec = hexSubtract(pos, unit);
+            relPos = hexRotate(vec, 6 - (unit.rotation || 0));
+        } else {
+            // Square relative: Target - Unit
+            let rc = pos.col - unit.col;
+            let rr = pos.row - unit.row;
+
+            // Inverse Rotate Square (Rotate counter-rotation times)
+            // If unit is rotated R times CW:
+            // Rel = (Target - Unit) rotated -R times (or +R times CCW, or 4-R times CW).
+            const rot = (4 - ((unit.rotation || 0) % 4)) % 4;
+
+            for (let i = 0; i < rot; i++) {
+                const temp = rc;
+                rc = -rr;
+                rr = temp;
+            }
+            relPos = { col: rc, row: rr };
+        }
 
         // Toggle: check if exists in aura
         if (!unit.aura) unit.aura = [];
 
-        const existingIndex = unit.aura.findIndex(h => h.q === relHex.q && h.r === relHex.r && h.s === relHex.s);
+        const existingIndex = unit.aura.findIndex(h => isSamePos(h, relPos));
+
         if (existingIndex !== -1) {
             unit.aura.splice(existingIndex, 1);
         } else {
-            unit.aura.push(relHex);
+            unit.aura.push(relPos);
         }
         render();
 
     } else {
         // Selection Logic (View Mode)
         // Find existing unit at this hex
-        const index = state.swordsmen.findIndex(u =>
-            Math.round(u.q) === hex.q &&
-            Math.round(u.r) === hex.r &&
-            Math.round(u.s) === hex.s
-        );
+        const index = state.swordsmen.findIndex(u => isSamePos(u, pos));
 
         if (index !== -1) {
             // Force VIEW mode if we selected a unit (clears Grid Tool etc)
@@ -819,15 +1055,17 @@ paintBtn.addEventListener('click', () => {
 
 rotateCWBtn.addEventListener('click', () => {
     if (state.selectedUnitIndex !== -1) {
-        state.swordsmen[state.selectedUnitIndex].rotation = (state.swordsmen[state.selectedUnitIndex].rotation + 1) % 6;
+        const stepCount = state.gridType === 'HEX' ? 6 : 4;
+        state.swordsmen[state.selectedUnitIndex].rotation = (state.swordsmen[state.selectedUnitIndex].rotation + 1) % stepCount;
         render();
     }
 });
 
 rotateCCWBtn.addEventListener('click', () => {
     if (state.selectedUnitIndex !== -1) {
+        const stepCount = state.gridType === 'HEX' ? 6 : 4;
         let r = state.swordsmen[state.selectedUnitIndex].rotation - 1;
-        if (r < 0) r = 5;
+        if (r < 0) r = stepCount - 1;
         state.swordsmen[state.selectedUnitIndex].rotation = r;
         render();
     }
