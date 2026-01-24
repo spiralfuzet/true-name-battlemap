@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hex Map Battlemap</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="ui-overlay">
+            <h1>Hex Battlemap</h1>
+            <div class="ui-container"
+                style="display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; width: 100%;">
+
+                <!-- Row 1: Main Tools (Icon Only) -->
+                <div class="toolbar-main controls"
+                    style="display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-start;">
+                    <button id="grid-tool-btn" class="btn" title="Hex Grid Settings">
+                        <span class="icon">⬢</span>
+                    </button>
+
+                    <div class="control-group separator"
+                        style="width: 1px; background: var(--glass-border); margin: 0 0.5rem;"></div>
+
+                    <button id="place-unit-btn" class="btn" title="Place Swordsman">
+                        <span class="icon">⚔️</span>
+                    </button>
+                    <button id="place-marker-btn" class="btn" title="Place Marker">
+                        <span class="icon">📍</span>
+                    </button>
+                    <button id="place-number-btn" class="btn" title="Number Tool">
+                        <span class="icon">🔢</span>
+                    </button>
+                    <button id="place-arrow-btn" class="btn" title="Arrow Tool">
+                        <span class="icon">↗️</span>
+                    </button>
+                </div>
+
+                <!-- Row 2: Options (Context Sensitive) -->
+                <div class="toolbar-options controls"
+                    style="display: flex; gap: 0.5rem; min-height: 40px; margin-top: 5px; justify-content: flex-start;">
+
+                    <!-- Grid Options -->
+                    <div class="control-group" id="grid-options" style="display: none; align-items: center; gap: 1rem;">
+                        <button id="orientation-toggle" class="btn premium-btn"
+                            style="font-size: 0.8rem; padding: 0.2rem 0.5rem;">
+                            <span id="btn-text">Switch to Flat Top</span>
+                        </button>
+                        <div class="control-group">
+                            <label for="ring-count" style="font-size: 0.9rem;">Rings: <span
+                                    id="ring-count-val">10</span></label>
+                            <input type="range" id="ring-count" min="1" max="10" value="10" style="width: 80px;">
+                        </div>
+                    </div>
+
+                    <div class="control-group" id="unit-actions" style="display: none;">
+                        <button id="move-btn" class="btn icon-only" title="Move Unit">✥</button>
+                        <button id="paint-btn" class="btn icon-only" title="Paint Aura">🖌️</button>
+                        <button id="rotate-ccw-btn" class="btn icon-only" title="Rotate Left">↺</button>
+                        <button id="rotate-cw-btn" class="btn icon-only" title="Rotate Right">↻</button>
+                        <button id="delete-btn" class="btn icon-only danger" title="Remove Unit">🗑️</button>
+                        <button id="close-btn" class="btn icon-only" title="Deselect">✖️</button>
+
+                        <!-- Area Options -->
+                        <div class="control-group separator"
+                            style="width: 1px; background: var(--glass-border); margin: 0 0.5rem;"></div>
+                        <div class="control-group" style="align-items: center; gap: 0.5rem; display: flex;">
+                            <label
+                                style="font-size: 0.9rem; cursor: pointer; display: flex; align-items: center; gap: 0.3rem;">
+                                <input type="checkbox" id="area-toggle"> Area
+                            </label>
+                            <input type="number" id="area-radius" min="1" max="10" value="1"
+                                style="width: 40px; text-align: center; color: black;" title="Area Radius (Rings)">
+                        </div>
+                    </div>
+
+                    <!-- Number Options -->
+                    <div class="control-group" id="number-options" style="display: none;">
+                        <label for="number-input" style="color: white; margin-right: 0.5rem;">Value:</label>
+                        <input type="text" id="number-input" class="range-input"
+                            style="width: 50px; text-align: center; color: black; border: 1px solid #ccc; border-left: 1px solid #ccc !important;"
+                            placeholder="#">
+                    </div>
+
+                    <!-- Paint/Arrow Options -->
+                    <div class="control-group" id="paint-options"
+                        style="display: none; border-left: 1px solid var(--glass-border); padding-left: 1rem; align-items: center;">
+                        <label>Color: <input type="color" id="aura-color" value="#3b82f6"></label>
+                        <label style="display: flex; align-items: center; gap: 0.5rem;"> Opacity: <input type="range"
+                                id="aura-opacity" min="0.1" max="1" step="0.1" value="0.5" style="width: 60px;"></label>
+                    </div>
+                </div>
+
+            </div>
+        </header>
+
+        <main class="canvas-container">
+            <canvas id="hex-canvas"></canvas>
+        </main>
+        <!-- Footer removed as requested -->
+    </div>
+    <script src="script.js"></script>
+</body>
+
+</html>
