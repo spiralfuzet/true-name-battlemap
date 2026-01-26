@@ -9,7 +9,6 @@ const toggleBtn = document.getElementById('orientation-toggle');
 const btnText = document.getElementById('btn-text');
 const orientationStatus = document.getElementById('orientation-status'); // Likely null if footer removed? Check usage.
 const ringCountInput = document.getElementById('ring-count');
-const ringCountVal = document.getElementById('ring-count-val');
 
 const placeUnitBtn = document.getElementById('place-unit-btn');
 const placeMarkerBtn = document.getElementById('place-marker-btn');
@@ -27,17 +26,20 @@ const deleteBtn = document.getElementById('delete-btn');
 const closeBtn = document.getElementById('close-btn');
 const paintOptions = document.getElementById('paint-options');
 const auraColorInput = document.getElementById('aura-color');
-const auraOpacityInput = document.getElementById('aura-opacity');
+const auraOpacityInput = document.getElementById('aura-opacity-input');
 const numberOptions = document.getElementById('number-options');
 const numberInput = document.getElementById('number-input');
 
 // Area Controls
-const areaToggle = document.getElementById('area-toggle');
-const areaRadiusInput = document.getElementById('area-radius');
+// Area Controls (Per Unit)
+const areaToggle = document.getElementById('unit-area-toggle');
+const areaRadiusInput = document.getElementById('unit-area-radius-input');
+const areaPatternSelect = document.getElementById('unit-area-pattern-select');
 
 // Zoom & Pan Controls
 const zoomInput = document.getElementById('zoom-input');
 const resetViewBtn = document.getElementById('reset-view-btn');
+const zoomOptions = document.getElementById('zoom-options');
 
 // Grid Type
 const gridTypeSelect = document.getElementById('grid-type-select');
@@ -79,6 +81,9 @@ let state = {
     nextColorIndex: 0,
     arrowStart: null
 };
+
+// Track if a pan action occurred (to distinguish clicks from drags)
+let hasPanned = false;
 
 // --- Hex Math (Cube Coordinates: q, r, s) ---
 // Constraint: q + r + s = 0
@@ -281,15 +286,11 @@ function drawHex(hex, style = {}) {
     ctx.fillStyle = (style && style.fillStyle) ? style.fillStyle : CONFIG.colors.fill;
     ctx.fill();
 
-    // Check if this hex is a valid move target (neighbor of selected)
+    // Check if this hex is a valid move target (hovered cell when moving)
     let isMoveTarget = false;
-    if (state.selectedUnitIndex !== -1 && state.isMoving) {
-        const selectedUnit = state.swordsmen[state.selectedUnitIndex];
-        // Check distance = 1
-        const dq = Math.abs(selectedUnit.q - hex.q);
-        const dr = Math.abs(selectedUnit.r - hex.r);
-        const ds = Math.abs(selectedUnit.s - hex.s);
-        if ((dq + dr + ds) === 2) { // Distance 1 in cube coords
+    if (state.selectedUnitIndex !== -1 && state.isMoving && state.hoveredPos) {
+        // Highlight the hovered cell as the move target
+        if (isSamePos(hex, state.hoveredPos)) {
             isMoveTarget = true;
         }
     }
@@ -327,14 +328,10 @@ function drawSquare(cell, style = {}) {
     ctx.fillStyle = (style && style.fillStyle) ? style.fillStyle : CONFIG.colors.fill;
     ctx.fill();
 
-    // Move Target logic (Square)
+    // Move Target logic (Square) - highlight hovered cell when moving
     let isMoveTarget = false;
-    if (state.selectedUnitIndex !== -1 && state.isMoving && state.gridType === 'SQUARE') {
-        const selectedUnit = state.swordsmen[state.selectedUnitIndex];
-        const dCol = Math.abs(selectedUnit.col - cell.col);
-        const dRow = Math.abs(selectedUnit.row - cell.row);
-        // 8-way movement (Chebyshev distance = 1)
-        if (Math.max(dCol, dRow) === 1) {
+    if (state.selectedUnitIndex !== -1 && state.isMoving && state.gridType === 'SQUARE' && state.hoveredPos) {
+        if (isSamePos(cell, state.hoveredPos)) {
             isMoveTarget = true;
         }
     }
@@ -354,31 +351,155 @@ function drawSquare(cell, style = {}) {
     }
 }
 
+// Helper to generate pattern
+function getAreaPattern(color, type) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const size = 20;
+    canvas.width = size;
+    canvas.height = size;
+
+    // Transparent background
+
+    // Parse Color
+    const rgb = hexToRgb(color || '#333');
+    const rgba = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.5)`; // 50% opacity lines
+
+    ctx.strokeStyle = rgba;
+    ctx.fillStyle = rgba;
+    ctx.lineWidth = 2;
+
+    switch (type) {
+        case 'HORIZONTAL':
+            ctx.beginPath();
+            ctx.moveTo(0, size / 2);
+            ctx.lineTo(size, size / 2);
+            ctx.stroke();
+            break;
+        case 'VERTICAL':
+            ctx.beginPath();
+            ctx.moveTo(size / 2, 0);
+            ctx.lineTo(size / 2, size);
+            ctx.stroke();
+            break;
+        case 'DIAGONAL_FWD': // /
+            ctx.beginPath();
+            ctx.moveTo(0, size);
+            ctx.lineTo(size, 0);
+            ctx.stroke();
+            break;
+        case 'DIAGONAL_BCK': // \
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(size, size);
+            ctx.stroke();
+            break;
+        case 'CROSSHATCH':
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(size, size);
+            ctx.moveTo(0, size);
+            ctx.lineTo(size, 0);
+            ctx.stroke();
+            break;
+        case 'DOTS':
+            ctx.beginPath();
+            ctx.arc(size / 2, size / 2, 2, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+        case 'SOLID':
+        default:
+            // Handled externally or just full fill
+            // If we want pattern for solid? No, ctx.fillStyle is better.
+            return null;
+    }
+    return ctx.createPattern(canvas, 'repeat');
+}
+
 function drawUnitArea(unit) {
     if (!unit.showArea || !unit.areaRadius || unit.areaRadius < 1) return;
 
-    for (let r = 1; r <= unit.areaRadius; r++) {
-        let ringCells;
-        if (state.gridType === 'HEX') {
-            ringCells = generateRing(unit, r);
-            ringCells.forEach(hex => {
-                drawHex(hex, {
-                    strokeOnly: true,
-                    strokeStyle: unit.color || '#333',
-                    lineWidth: 2
-                });
-            });
-        } else {
-            ringCells = generateSquareRing(unit, r);
-            ringCells.forEach(cell => {
-                drawSquare(cell, {
-                    strokeOnly: true,
-                    strokeStyle: unit.color || '#333',
-                    lineWidth: 2
-                });
-            });
+    // We need to fill the WHOLE area, not just the ring, for patterns.
+    // Or did user mean just the ring? "Area fill patterns" implies area.
+    // Let's iterate spiral for Hex, or full square for Square.
+
+    // Hex: Spiral
+    // Square: Grid loop
+
+    const cells = [];
+    if (state.gridType === 'HEX') {
+        for (let q = -unit.areaRadius; q <= unit.areaRadius; q++) {
+            for (let r = -unit.areaRadius; r <= unit.areaRadius; r++) {
+                const s = -q - r;
+                if (Math.abs(q) <= unit.areaRadius && Math.abs(r) <= unit.areaRadius && Math.abs(s) <= unit.areaRadius) {
+                    // Exclude center? Usually area includes center.
+                    if (q === 0 && r === 0 && s === 0) continue;
+                    // Add absolute position
+                    cells.push(hexAdd(unit, { q, r, s }));
+                }
+            }
+        }
+    } else {
+        // Square - use Euclidean distance for circular shape
+        for (let col = -unit.areaRadius; col <= unit.areaRadius; col++) {
+            for (let row = -unit.areaRadius; row <= unit.areaRadius; row++) {
+                if (col === 0 && row === 0) continue;
+                // Use Euclidean distance for circular area
+                const dist = Math.sqrt(col * col + row * row);
+                if (dist <= unit.areaRadius + 0.5) { // +0.5 for smoother circle at edges
+                    cells.push({ col: unit.col + col, row: unit.row + row });
+                }
+            }
         }
     }
+
+    // Determine Style
+    const rgb = hexToRgb(unit.color || '#333');
+    let fillStyle;
+
+    if (!unit.areaPattern || unit.areaPattern === 'SOLID') {
+        fillStyle = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.2)`;
+    } else {
+        // Use Pattern
+        const pattern = getAreaPattern(unit.color, unit.areaPattern);
+        fillStyle = pattern || `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.2)`;
+    }
+
+    cells.forEach(cell => {
+        // Draw Fill
+        if (state.gridType === 'HEX') {
+            drawHex(cell, { fillStyle: fillStyle });
+            // Optional: Border for the whole area? 
+            // Or border for each cell? Ring is cleaner.
+        } else {
+            drawSquare(cell, { fillStyle: fillStyle });
+        }
+    });
+
+    // Draw Ring Outline on top for definition
+    // Reuse existing ring generation for outer boundary?
+    // Let's just draw the cells with the pattern for now, maybe with a light stroke?
+    // If I draw stroke on every cell it looks messy.
+    // Let's recreate the border Effect by drawing the ring *specifically*?
+    // User asked for "Area Fill Pattern". 
+    // Let's Keep the fill.
+    // And maybe keep the outer ring stroke?
+    // The previous implementation loop:
+    /*
+    for (let r = 1; r <= unit.areaRadius; r++) {
+       // ... generate ring ...
+       // draw outline
+    }
+    */
+    // If it's solid, we usually want the whole thing filled.
+    // If it's crosshatch, we want the whole thing filled.
+    // So the previous "Ring Loop" was just outlining every ring?
+    // "drawHex ... strokeOnly". Yes. 
+    // It was drawing concentric rings.
+
+    // Let's REPLACE concentric rings with Full Area Fill + Outer Border?
+    // Or just Full Area Fill.
+    // Let's stick to Full Area Fill.
 }
 
 function render() {
@@ -838,15 +959,18 @@ function updateUI() {
     paintOptions.style.display = 'none';
     numberOptions.style.display = 'none';
     gridOptions.style.display = 'none';
-
-    // Zoom/Pan is always visible now? Yes in plan.
+    zoomOptions.style.display = 'none';
 
     // Cursors
     canvas.style.cursor = 'default';
 
-    if (state.mode === 'PAN_ZOOM') {
+    if (state.mode === 'PAN_ZOOM' && state.selectedUnitIndex === -1) {
         panToolBtn.classList.add('active');
         canvas.style.cursor = state.isPanning ? 'grabbing' : 'grab';
+        zoomOptions.style.display = 'flex';
+    } else if (state.mode === 'PAN_ZOOM') {
+        // Pan mode but unit is selected - still show pan as active, just hide zoom options
+        panToolBtn.classList.add('active');
     }
 
     // Unit actions only show if selected
@@ -872,8 +996,9 @@ function updateUI() {
 
         // Sync Area controls
         const unit = state.swordsmen[state.selectedUnitIndex];
-        areaToggle.checked = unit.showArea;
+        areaToggle.checked = unit.showArea || false;
         areaRadiusInput.value = unit.areaRadius || 1;
+        areaPatternSelect.value = unit.areaPattern || 'SOLID';
     }
 
     // Set active based on mode
@@ -967,10 +1092,9 @@ gridTypeSelect.addEventListener('change', (e) => {
     switchGridType(e.target.value.toUpperCase());
 });
 toggleBtn.addEventListener('click', toggleOrientation);
-ringCountInput.addEventListener('input', (e) => {
-    const val = parseInt(e.target.value);
-    CONFIG.mapRadius = val;
-    ringCountVal.textContent = val;
+ringCountInput.addEventListener('change', (e) => {
+    const val = parseInt(e.target.value) || 10;
+    CONFIG.mapRadius = Math.min(100, Math.max(1, val)); // Clamp to 1-100
     render();
 });
 
@@ -1168,7 +1292,15 @@ canvas.addEventListener('click', (e) => {
         const color = CONFIG.defaultColors[state.nextColorIndex];
         state.nextColorIndex = (state.nextColorIndex + 1) % CONFIG.defaultColors.length;
 
-        state.swordsmen.push({ ...pos, rotation: 0, color: color, auraOpacity: 0.5, showArea: false, areaRadius: 1 });
+        state.swordsmen.push({
+            ...pos,
+            rotation: 0,
+            color: color,
+            auraOpacity: 0.5,
+            showArea: false,
+            areaRadius: 1,
+            areaPattern: 'SOLID'
+        });
         render();
     } else if (state.mode === 'PLACE_MARKER') {
         if (!isValidGridPos(pos)) return;
@@ -1185,48 +1317,38 @@ canvas.addEventListener('click', (e) => {
         }
         render();
     } else if (state.isMoving && state.selectedUnitIndex !== -1) {
-        // Attempt to move selected unit
-        const selectedUnit = state.swordsmen[state.selectedUnitIndex];
-        let isValidMove = false;
+        // Move selected unit to clicked position (drag and drop anywhere)
+        if (!isValidGridPos(pos)) {
+            // Clicked outside grid - cancel move
+            state.isMoving = false;
+            updateUI();
+            render();
+            return;
+        }
 
+        // Check if clicking on another unit - select that unit instead
+        const clickedUnitIndex = state.swordsmen.findIndex(u => isSamePos(u, pos));
+        if (clickedUnitIndex !== -1 && clickedUnitIndex !== state.selectedUnitIndex) {
+            state.selectedUnitIndex = clickedUnitIndex;
+            state.isMoving = false;
+            updateUI();
+            render();
+            return;
+        }
+
+        // Move unit to new position (aura and area use relative offsets, so they move automatically)
         if (state.gridType === 'HEX') {
-            const dq = Math.abs(selectedUnit.q - pos.q);
-            const dr = Math.abs(selectedUnit.r - pos.r);
-            const ds = Math.abs(selectedUnit.s - pos.s);
-            if ((dq + dr + ds) === 2) isValidMove = true;
+            state.swordsmen[state.selectedUnitIndex].q = pos.q;
+            state.swordsmen[state.selectedUnitIndex].r = pos.r;
+            state.swordsmen[state.selectedUnitIndex].s = pos.s;
         } else {
-            // Square: 8-way movement
-            const dCol = Math.abs(selectedUnit.col - pos.col);
-            const dRow = Math.abs(selectedUnit.row - pos.row);
-            if (Math.max(dCol, dRow) === 1) isValidMove = true;
+            state.swordsmen[state.selectedUnitIndex].col = pos.col;
+            state.swordsmen[state.selectedUnitIndex].row = pos.row;
         }
-
-        // If neighbor
-        if (isValidMove) {
-            // Update coordinates but keep rotation
-            if (state.gridType === 'HEX') {
-                state.swordsmen[state.selectedUnitIndex].q = pos.q;
-                state.swordsmen[state.selectedUnitIndex].r = pos.r;
-                state.swordsmen[state.selectedUnitIndex].s = pos.s;
-            } else {
-                state.swordsmen[state.selectedUnitIndex].col = pos.col;
-                state.swordsmen[state.selectedUnitIndex].row = pos.row;
-            }
-            // Stop moving
-            state.isMoving = false;
-            updateUI();
-            render();
-        } else {
-            // Clicked elsewhere
-            state.isMoving = false;
-            // Check if we clicked another unit
-            const index = state.swordsmen.findIndex(u => isSamePos(u, pos));
-            if (index !== -1) {
-                state.selectedUnitIndex = index;
-            }
-            updateUI();
-            render();
-        }
+        // Stop moving after placing
+        state.isMoving = false;
+        updateUI();
+        render();
     } else if (state.isPainting && state.selectedUnitIndex !== -1) {
         if (!isValidGridPos(pos)) return; // Painting valid only on grid
         // Aura Painting Logic
@@ -1358,6 +1480,7 @@ areaToggle.addEventListener('change', (e) => {
     }
 });
 
+// Area Listeners
 areaRadiusInput.addEventListener('input', (e) => {
     if (state.selectedUnitIndex !== -1) {
         state.swordsmen[state.selectedUnitIndex].areaRadius = parseInt(e.target.value);
@@ -1365,6 +1488,22 @@ areaRadiusInput.addEventListener('input', (e) => {
     }
 });
 
+areaPatternSelect.addEventListener('change', (e) => {
+    if (state.selectedUnitIndex !== -1) {
+        state.swordsmen[state.selectedUnitIndex].areaPattern = e.target.value;
+        render();
+    }
+});
+
 // Initial start
-updateUI(); // Set initial active buttons/cursors
-resize(); // also triggers render
+// Event Listeners
+window.addEventListener('resize', resize);
+
+// Initialize immediately - script is at end of body so DOM is ready
+// Use setTimeout(0) to defer until after current call stack, ensuring layout is complete
+setTimeout(() => {
+    resetView(); // Force camera reset to center grid properly
+    updateUI(); // Set initial active buttons/cursors
+    resize(); // also triggers render
+}, 0);
+
