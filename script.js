@@ -621,9 +621,16 @@ function render() {
         }
     });
 
-    // Draw Swordsmen
-    state.swordsmen.forEach((unit, index) => {
-        drawSwordsman(unit, index === state.selectedUnitIndex);
+    // Draw Swordsmen (with stacking support)
+    const swordsmenGroups = groupSwordsmenByPos();
+    swordsmenGroups.forEach((group) => {
+        const count = Math.min(group.length, 6); // Cap at 6 for stacking layout
+        const offsets = getStackingOffsets(count);
+
+        group.forEach(({ unit, index }, i) => {
+            const offset = offsets[Math.min(i, offsets.length - 1)];
+            drawSwordsman(unit, index === state.selectedUnitIndex, offset, offset.faceCenter);
+        });
     });
 
     // Draw Numbers
@@ -756,19 +763,24 @@ function drawNumber(num, isGhost = false) {
     ctx.restore();
 }
 
-function drawSwordsman(unit, isSelected) {
+function drawSwordsman(unit, isSelected, offset = { x: 0, y: 0 }, faceCenter = false) {
     const { x, y } = posToPixel(unit);
 
+    // Apply stacking offset
+    const drawX = x + offset.x;
+    const drawY = y + offset.y;
+
     ctx.save();
-    ctx.translate(x, y);
+    ctx.translate(drawX, drawY);
 
     if (unit.ghost) ctx.globalAlpha = 0.5;
 
-    // Selection highlight
+    // Selection highlight (drawn at offset position but smaller for stacked units)
     if (isSelected) {
         ctx.beginPath();
         // Circle or Square highlight based on grid? Let's stick to circle for unit selection, looks better.
-        ctx.arc(0, 0, CONFIG.hexSize * 0.8, 0, Math.PI * 2);
+        const highlightRadius = (offset.x === 0 && offset.y === 0) ? CONFIG.hexSize * 0.8 : CONFIG.hexSize * 0.35;
+        ctx.arc(0, 0, highlightRadius, 0, Math.PI * 2);
         ctx.strokeStyle = '#f59e0b'; // Amber-500
         ctx.lineWidth = 3;
         ctx.stroke();
@@ -776,29 +788,41 @@ function drawSwordsman(unit, isSelected) {
         ctx.fill();
     }
 
-    // Orientation logic
-    let baseRotation = 0;
-    if (state.gridType === 'HEX') {
-        if (state.orientation === 'POINTY') {
-            baseRotation = -60 * (Math.PI / 180);
+    // Determine rotation
+    let finalRotation;
+
+    if (faceCenter) {
+        // Face toward center of hex (where offset is 0,0)
+        // This means pointing in the opposite direction of the offset
+        finalRotation = calculateFaceCenterRotation(offset.x, offset.y);
+    } else {
+        // Use normal rotation logic
+        let baseRotation = 0;
+        if (state.gridType === 'HEX') {
+            if (state.orientation === 'POINTY') {
+                baseRotation = -60 * (Math.PI / 180);
+            } else {
+                baseRotation = -90 * (Math.PI / 180);
+            }
         } else {
+            // Square: 0 is Right (East). -90 is Up (North).
             baseRotation = -90 * (Math.PI / 180);
         }
-    } else {
-        // Square: 0 is Right (East). -90 is Up (North).
-        // Let's assume default "UP" for 0 rotation?
-        // Actually, user said 45 degrees.
-        // Let's stick to standard math: 0 = East.
-        // If we want swordsman pointing UP by default, rotation should be -90 deg (-PI/2).
-        baseRotation = -90 * (Math.PI / 180);
+
+        // Individual unit rotation
+        // HEX: 60 deg steps. SQUARE: 90 deg steps.
+        const stepSize = state.gridType === 'HEX' ? 60 : 90;
+        const unitRotation = (unit.rotation || 0) * stepSize * (Math.PI / 180);
+
+        finalRotation = baseRotation + unitRotation;
     }
 
-    // Individual unit rotation
-    // HEX: 60 deg steps. SQUARE: 90 deg steps.
-    const stepSize = state.gridType === 'HEX' ? 60 : 90;
-    const unitRotation = (unit.rotation || 0) * stepSize * (Math.PI / 180);
+    ctx.rotate(finalRotation);
 
-    ctx.rotate(baseRotation + unitRotation);
+    // Scale down swordsman if stacked (not at center)
+    const isStacked = offset.x !== 0 || offset.y !== 0;
+    const scale = isStacked ? 0.7 : 1.0;
+    ctx.scale(scale, scale);
 
     // Draw Stylized Swordsman
     ctx.fillStyle = unit.color || '#333';
@@ -825,6 +849,115 @@ function drawSwordsman(unit, isSelected) {
     ctx.stroke();
 
     ctx.restore();
+}
+
+// --- Swordsman Stacking Logic ---
+
+/**
+ * Get offset positions for multiple swordsmen in the same hex.
+ * Returns array of {x, y, faceCenter} offsets relative to hex center.
+ * faceCenter indicates if the unit should face toward the hex center.
+ * 
+ * Positions follow pointy-top hex corners:
+ *        N (top)
+ *    NW      NE
+ *    SW      SE
+ *        S (bottom)
+ */
+function getStackingOffsets(count) {
+    const r = CONFIG.hexSize * 0.45; // Offset radius from center
+
+    // Angles for hex corners (pointy-top orientation)
+    // 0° = right (E), 90° = down (S), etc.
+    // For pointy-top: corners are at 30°, 90°, 150°, 210°, 270°, 330°
+    const NE = { x: r * Math.cos(-30 * Math.PI / 180), y: r * Math.sin(-30 * Math.PI / 180) };
+    const SE = { x: r * Math.cos(30 * Math.PI / 180), y: r * Math.sin(30 * Math.PI / 180) };
+    const S = { x: r * Math.cos(90 * Math.PI / 180), y: r * Math.sin(90 * Math.PI / 180) };
+    const SW = { x: r * Math.cos(150 * Math.PI / 180), y: r * Math.sin(150 * Math.PI / 180) };
+    const NW = { x: r * Math.cos(210 * Math.PI / 180), y: r * Math.sin(210 * Math.PI / 180) };
+    const N = { x: r * Math.cos(-90 * Math.PI / 180), y: r * Math.sin(-90 * Math.PI / 180) };
+
+    switch (count) {
+        case 1:
+            return [{ x: 0, y: 0, faceCenter: false }];
+        case 2:
+            // Top and bottom
+            return [
+                { ...N, faceCenter: true },
+                { ...S, faceCenter: true }
+            ];
+        case 3:
+            // NE, NW, and S corners
+            return [
+                { ...NE, faceCenter: true },
+                { ...NW, faceCenter: true },
+                { ...S, faceCenter: true }
+            ];
+        case 4:
+            // Two east (NE, SE) and two west (NW, SW)
+            return [
+                { ...NE, faceCenter: true },
+                { ...SE, faceCenter: true },
+                { ...NW, faceCenter: true },
+                { ...SW, faceCenter: true }
+            ];
+        case 5:
+            // All corners except one (skip S)
+            return [
+                { ...N, faceCenter: true },
+                { ...NE, faceCenter: true },
+                { ...SE, faceCenter: true },
+                { ...NW, faceCenter: true },
+                { ...SW, faceCenter: true }
+            ];
+        case 6:
+        default:
+            // All six corners
+            return [
+                { ...N, faceCenter: true },
+                { ...NE, faceCenter: true },
+                { ...SE, faceCenter: true },
+                { ...S, faceCenter: true },
+                { ...SW, faceCenter: true },
+                { ...NW, faceCenter: true }
+            ];
+    }
+}
+
+/**
+ * Group swordsmen by their grid position.
+ * Returns a Map of posKey -> array of {unit, index} objects.
+ */
+function groupSwordsmenByPos() {
+    const groups = new Map();
+
+    state.swordsmen.forEach((unit, index) => {
+        let key;
+        if (state.gridType === 'HEX') {
+            key = `${unit.q},${unit.r},${unit.s}`;
+        } else {
+            key = `${unit.col},${unit.row}`;
+        }
+
+        if (!groups.has(key)) {
+            groups.set(key, []);
+        }
+        groups.get(key).push({ unit, index });
+    });
+
+    return groups;
+}
+
+/**
+ * Calculate rotation to face the center of the hex.
+ * Returns rotation in radians to add to the base rotation.
+ */
+function calculateFaceCenterRotation(offsetX, offsetY) {
+    if (offsetX === 0 && offsetY === 0) return 0;
+    // Calculate angle from offset position pointing toward center (0, 0)
+    // Point toward center means rotate 180° from the outward angle
+    const angle = Math.atan2(-offsetY, -offsetX);
+    return angle;
 }
 
 function hexToRgb(hex) {
@@ -1326,16 +1459,34 @@ canvas.addEventListener('click', (e) => {
             return;
         }
 
-        // Check if clicking on another unit - select that unit instead
-        const clickedUnitIndex = state.swordsmen.findIndex(u => isSamePos(u, pos));
-        if (clickedUnitIndex !== -1 && clickedUnitIndex !== state.selectedUnitIndex) {
-            state.selectedUnitIndex = clickedUnitIndex;
+        // Check if clicking on the currently selected unit's position (to cycle selection in stacked units)
+        const selectedUnit = state.swordsmen[state.selectedUnitIndex];
+        const clickingOnSelectedUnitPos = isSamePos(selectedUnit, pos);
+
+        if (clickingOnSelectedUnitPos) {
+            // Clicking on the same position as the selected unit - check for cycling
+            const unitsAtPos = state.swordsmen
+                .map((u, idx) => ({ unit: u, index: idx }))
+                .filter(({ unit }) => isSamePos(unit, pos));
+
+            if (unitsAtPos.length > 1) {
+                // Cycle to next unit in the group
+                const currentInGroup = unitsAtPos.findIndex(({ index }) => index === state.selectedUnitIndex);
+                const nextInGroup = (currentInGroup + 1) % unitsAtPos.length;
+                state.selectedUnitIndex = unitsAtPos[nextInGroup].index;
+                state.isMoving = false;
+                updateUI();
+                render();
+                return;
+            }
+            // If only one unit at this position, cancel move (clicking same spot)
             state.isMoving = false;
             updateUI();
             render();
             return;
         }
 
+        // Moving to a different position - allow stacking with units already there
         // Move unit to new position (aura and area use relative offsets, so they move automatically)
         if (state.gridType === 'HEX') {
             state.swordsmen[state.selectedUnitIndex].q = pos.q;
@@ -1390,15 +1541,31 @@ canvas.addEventListener('click', (e) => {
 
     } else {
         // Selection Logic (View Mode)
-        // Find existing unit at this hex
-        const index = state.swordsmen.findIndex(u => isSamePos(u, pos));
+        // Find all units at this position
+        const unitsAtPos = state.swordsmen
+            .map((u, idx) => ({ unit: u, index: idx }))
+            .filter(({ unit }) => isSamePos(unit, pos));
 
-        if (index !== -1) {
+        if (unitsAtPos.length > 0) {
             // Force VIEW mode if we selected a unit (clears Grid Tool etc)
             state.mode = 'VIEW';
+
+            // Check if currently selected unit is among them
+            const currentSelectedInGroup = unitsAtPos.findIndex(({ index }) => index === state.selectedUnitIndex);
+
+            if (currentSelectedInGroup !== -1 && unitsAtPos.length > 1) {
+                // Cycle to next unit in the group
+                const nextInGroup = (currentSelectedInGroup + 1) % unitsAtPos.length;
+                state.selectedUnitIndex = unitsAtPos[nextInGroup].index;
+            } else {
+                // Select the first unit at this position
+                state.selectedUnitIndex = unitsAtPos[0].index;
+            }
+        } else {
+            // No unit at position - deselect
+            state.selectedUnitIndex = -1;
         }
 
-        state.selectedUnitIndex = index;
         state.isMoving = false; // Reset move status on new selection
         updateUI();
         render();
